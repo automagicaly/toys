@@ -1,18 +1,18 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"net/netip"
 	"os"
-	"strings"
 	"time"
 
 	swgui "github.com/swaggest/swgui/v5cdn"
 
+	"lorde.tech/toys/commons"
 	rl "lorde.tech/toys/rate_limiter"
 	tiny "lorde.tech/toys/shortener"
 )
@@ -21,6 +21,10 @@ import (
 var openapi string
 
 func main() {
+	otelShutdown, err := commons.SetupOTelSDK(context.Background())
+	commons.DieOnError(err)
+	defer otelShutdown(context.Background())
+
 	shortener := tiny.NewShortener()
 	shortener.LoadFromLog()
 
@@ -43,10 +47,10 @@ func main() {
 	}()
 
 	apiWrapper := func(f http.HandlerFunc) http.HandlerFunc {
-		return rateLimited(apiLimiter, f)
+		return apiLimiter.LimitByIP(f)
 	}
 
-	http.HandleFunc("GET /{id}", rateLimited(translateLimiter, translateTinyUrl(shortener)))
+	http.HandleFunc("GET /{id}", translateLimiter.LimitByIP(translateTinyUrl(shortener)))
 	http.HandleFunc("GET /api/urls", apiWrapper(listTinyUrls(shortener)))
 	http.HandleFunc("POST /api/urls", apiWrapper(createTinyUrl(shortener)))
 	http.HandleFunc("GET /api/urls/{id}", apiWrapper(fetchTinyUrl(shortener)))
@@ -58,22 +62,6 @@ func main() {
 
 	log.Println("Listening on port 1337")
 	http.ListenAndServe("localhost:1337", nil)
-}
-
-func rateLimited(limiter *rl.RateLimiter, f http.HandlerFunc) http.HandlerFunc {
-	red := func(s string) string {
-		return fmt.Sprintf("\x1b[1;31m%s\x1b[0m", s)
-	}
-	erro_log_format := red("REQUEST BLOCKED") + " -> %s"
-	return func(w http.ResponseWriter, r *http.Request) {
-		log := newLogger(r, "RATE LIMIT")
-		if !limiter.ShouldServe(getClientIp(r)) {
-			log.Error(erro_log_format, r.URL.Path)
-			http.Error(w, "Too many requests", http.StatusTooManyRequests)
-			return
-		}
-		f(w, r)
-	}
 }
 
 func redicrectToDocs(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +97,7 @@ func listTinyUrls(s *tiny.Shortener) http.HandlerFunc {
 	const localhostIPV4 = "0000:0000:0000:0000:0000:ffff:7f00:0001"
 	return func(w http.ResponseWriter, r *http.Request) {
 		log := newLogger(r, "API/LIST")
-		if ip := getClientIp(r); ip != localhostIPV4 && ip != localhostIPV6 {
+		if ip := commons.GetClientIp(r); ip != localhostIPV4 && ip != localhostIPV6 {
 			log.Error("Forbidden when not from localhost")
 			forbiddenRequest(w)
 			return
@@ -216,7 +204,7 @@ func newLogger(r *http.Request, tag string) *Logger {
 	return &Logger{
 		l: log.New(
 			os.Stdout,
-			fmt.Sprintf("[%s|%s] ", getClientIp(r), tag),
+			fmt.Sprintf("[%s|%s] ", commons.GetClientIp(r), tag),
 			log.LUTC|log.Ldate|log.Ltime|log.Lmsgprefix,
 		),
 	}
@@ -235,26 +223,6 @@ func (l *Logger) DefaultError(err error) {
 	l.Error(err.Error())
 }
 
-func getClientIp(r *http.Request) string {
-	ip := getForwardedHost(r)
-	if ip == "" {
-		ip = getRemoteAddr(r)
-	}
-	return ip
-}
-
-func getForwardedHost(r *http.Request) string {
-	hosts := r.Header.Get("X-Forwarded-For")
-	if hosts == "" {
-		return ""
-	}
-
-	ip := strings.Split(hosts, ",")[0]
-	ip = strings.Trim(ip, " ")
-
-	return normalizeIp(parseIp(ip))
-}
-
 func setCotentTypeToJson(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 }
@@ -267,22 +235,6 @@ func badRequest(w http.ResponseWriter, err error) {
 	w.WriteHeader(http.StatusBadRequest)
 	setCotentTypeToJson(w)
 	json.NewEncoder(w).Encode(ErrorResponse{Error: err.Error()})
-}
-
-func getRemoteAddr(r *http.Request) string {
-	return normalizeIp(netip.MustParseAddrPort(r.RemoteAddr).Addr())
-}
-
-func parseIp(ip string) netip.Addr {
-	addr, err := netip.ParseAddrPort(ip)
-	if err != nil {
-		return netip.MustParseAddr(ip)
-	}
-	return addr.Addr()
-}
-
-func normalizeIp(ip netip.Addr) string {
-	return netip.AddrFrom16(ip.As16()).StringExpanded()
 }
 
 type Request struct {
