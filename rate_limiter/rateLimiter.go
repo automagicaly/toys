@@ -17,7 +17,7 @@ const name = "lorde.tech/toys/rate_limiter"
 
 type RateLimiter struct {
 	rate      int64
-	ipMap     *sl.SkipList[*_bucket]
+	bucketMap *sl.SkipList[*_bucket]
 	logger    *slog.Logger
 	tracer    trace.Tracer
 	meter     metric.Meter
@@ -32,12 +32,20 @@ func NewRateLimiter(rate int64) *RateLimiter {
 
 	return &RateLimiter{
 		rate:      rate,
-		ipMap:     sl.NewSkiplist[*_bucket](),
+		bucketMap: sl.NewSkiplist[*_bucket](),
 		logger:    otelslog.NewLogger(name),
 		tracer:    otel.Tracer(name),
 		meter:     meter,
 		blocksCnt: blocksCnt,
 	}
+}
+
+func (rl *RateLimiter) ShouldServe(id string) bool {
+	bucket, err := rl.fetchBucket(id)
+	if err != nil {
+		return false
+	}
+	return bucket.useToken()
 }
 
 func (rl *RateLimiter) LimitByIP(f http.HandlerFunc) http.HandlerFunc {
@@ -49,7 +57,7 @@ func (rl *RateLimiter) LimitByIP(f http.HandlerFunc) http.HandlerFunc {
 		pathAttribute := attribute.String("path", r.URL.Path)
 		span.SetAttributes(ipAttribute, pathAttribute)
 
-		if !rl.shouldServe(ip) {
+		if !rl.ShouldServe(ip) {
 			rl.blocksCnt.Add(ctx, 1, metric.WithAttributes(
 				ipAttribute,
 				pathAttribute,
@@ -63,28 +71,20 @@ func (rl *RateLimiter) LimitByIP(f http.HandlerFunc) http.HandlerFunc {
 }
 
 func (rl *RateLimiter) Compact() {
-	for k, v := range rl.ipMap.Iter() {
+	for k, v := range rl.bucketMap.Iter() {
 		if v.isOld() {
-			rl.ipMap.Remove(k)
+			rl.bucketMap.Remove(k)
 		}
 	}
 }
 
-func (rl *RateLimiter) fetchByIp(ip string) (*_bucket, error) {
-	found, bucket := rl.ipMap.Search(ip)
+func (rl *RateLimiter) fetchBucket(id string) (*_bucket, error) {
+	found, bucket := rl.bucketMap.Search(id)
 	if !found {
 		bucket = newBucket(rl.rate)
-		if err := rl.ipMap.Insert(ip, bucket); err != nil {
+		if err := rl.bucketMap.Insert(id, bucket); err != nil {
 			return nil, err
 		}
 	}
 	return bucket, nil
-}
-
-func (rl *RateLimiter) shouldServe(ip string) bool {
-	bucket, err := rl.fetchByIp(ip)
-	if err != nil {
-		return false
-	}
-	return bucket.useToken()
 }
