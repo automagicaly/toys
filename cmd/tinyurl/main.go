@@ -6,36 +6,45 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"syscall"
 	"time"
 
 	swgui "github.com/swaggest/swgui/v5cdn"
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 
 	"lorde.tech/toys/commons"
 	rl "lorde.tech/toys/rate_limiter"
 	tiny "lorde.tech/toys/shortener"
 )
 
+const name = "lorde.tech/toys/tinyurl/main"
+const SETUP_FAILURE = 1
+
 //go:embed static/openapi.yaml
 var openapi string
+var logger slog.Logger
 
 func main() {
-	otelShutdown, err := commons.SetupOTelSDK(context.Background())
-	commons.DieOnError(err)
+	otelShutdown := setupOTelOrDie()
 	defer otelShutdown(context.Background())
 
 	shortener := tiny.NewShortener()
 	shortener.LoadFromLog()
 
-	log := log.New(
-		os.Stdout,
-		"[SERVER] ",
-		log.LUTC|log.Ldate|log.Ltime|log.Lmsgprefix,
-	)
+	apiLimiter, err := rl.NewRateLimiter(10)
+	if err != nil {
+		logger.Error("[FATAL] Failed to create general rate limiter", "error", err)
+		syscall.Exit(SETUP_FAILURE)
+	}
 
-	apiLimiter := rl.NewRateLimiter(10)
-	translateLimiter := rl.NewRateLimiter(100)
+	translateLimiter, err := rl.NewRateLimiter(100)
+	if err != nil {
+		logger.Error("[FATAL] Failed to create url translation rate limiter", "error", err)
+		syscall.Exit(SETUP_FAILURE)
+	}
 
 	// Compaction routine
 	go func() {
@@ -60,8 +69,25 @@ func main() {
 	http.Handle("/api/docs/", swgui.New("Tiny URL", "/api/docs/openapi.yaml", "/api/docs/"))
 	http.HandleFunc("/api/docs/openapi.yaml", serveOpenapi)
 
-	log.Println("Listening on port 1337")
+	logger.Info("Listening on port 1337")
 	http.ListenAndServe("localhost:1337", nil)
+}
+
+func setupOTelOrDie() func(context.Context) error {
+	log := log.New(
+		os.Stdout,
+		"[SERVER] ",
+		log.LUTC|log.Ldate|log.Ltime|log.Lmsgprefix,
+	)
+
+	log.Println("Setting up OpenTelemetry...")
+	otelShutdown, err := commons.SetupOTelSDK(context.Background())
+	if err != nil {
+		log.Fatal("[FATAL] OpenTelemetry setup failed", err)
+	}
+	logger = *otelslog.NewLogger(name)
+	log.Println("OpenTelemetry OK!")
+	return otelShutdown
 }
 
 func redicrectToDocs(w http.ResponseWriter, r *http.Request) {
