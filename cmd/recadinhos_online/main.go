@@ -11,6 +11,8 @@ import (
 	rl "lorde.tech/toys/rate_limiter"
 )
 
+const Missing = 0
+
 func main() {
 	log := log.New(
 		os.Stdout,
@@ -27,7 +29,7 @@ func main() {
 	repo.Init()
 
 	// rate limiter
-	apiLimiter := rl.NewRateLimiter(10)
+	apiLimiter, err := rl.NewRateLimiter(10)
 
 	repo.List(1, a.Missing, 1, a.Missing)
 

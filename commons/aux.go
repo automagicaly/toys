@@ -1,11 +1,43 @@
 package commons
 
 import (
+	"errors"
 	"log"
+	"os"
 	"runtime"
 )
 
-const Missing = 0
+const (
+	NormalExitCode = iota
+	GenericErrorExitCode
+	SetupErrorExitCode
+)
+
+type setupError struct {
+	wrappedError error
+}
+
+func (e *setupError) Error() string {
+	return e.wrappedError.Error()
+}
+
+func NewSetupError(err error) error {
+	return &setupError{err}
+}
+
+func HandleExitCode(err error) {
+	var returnCode int
+	var setupError *setupError
+	switch {
+	case err == nil:
+		returnCode = NormalExitCode
+	case errors.As(err, &setupError):
+		returnCode = SetupErrorExitCode
+	default:
+		returnCode = GenericErrorExitCode
+	}
+	os.Exit(returnCode)
+}
 
 func DieOnError(err error) {
 	// Deprecated: DieOnError should not be used in prod!

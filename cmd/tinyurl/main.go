@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"syscall"
 	"time"
 
 	swgui "github.com/swaggest/swgui/v5cdn"
@@ -21,14 +20,21 @@ import (
 )
 
 const name = "lorde.tech/toys/tinyurl/main"
-const SETUP_FAILURE = 1
 
 //go:embed static/openapi.yaml
 var openapi string
+
 var logger slog.Logger
 
 func main() {
-	otelShutdown := setupOTelOrDie()
+	commons.HandleExitCode(run())
+}
+
+func run() error {
+	otelShutdown, err := upgradeToOTEL()
+	if err != nil {
+		return err
+	}
 	defer otelShutdown(context.Background())
 
 	shortener := tiny.NewShortener()
@@ -37,13 +43,13 @@ func main() {
 	apiLimiter, err := rl.NewRateLimiter(10)
 	if err != nil {
 		logger.Error("[FATAL] Failed to create general rate limiter", "error", err)
-		syscall.Exit(SETUP_FAILURE)
+		return commons.NewSetupError(err)
 	}
 
 	translateLimiter, err := rl.NewRateLimiter(100)
 	if err != nil {
 		logger.Error("[FATAL] Failed to create url translation rate limiter", "error", err)
-		syscall.Exit(SETUP_FAILURE)
+		return commons.NewSetupError(err)
 	}
 
 	// Compaction routine
@@ -71,9 +77,10 @@ func main() {
 
 	logger.Info("Listening on port 1337")
 	http.ListenAndServe("localhost:1337", nil)
+	return nil
 }
 
-func setupOTelOrDie() func(context.Context) error {
+func upgradeToOTEL() (func(context.Context) error, error) {
 	log := log.New(
 		os.Stdout,
 		"[SERVER] ",
@@ -81,13 +88,14 @@ func setupOTelOrDie() func(context.Context) error {
 	)
 
 	log.Println("Setting up OpenTelemetry...")
-	otelShutdown, err := commons.SetupOTelSDK(context.Background())
+	otelShutdown, err := commons.SetupOTelSDK(context.Background(), "lorde.tech", "tinyurl", "0.1.0")
 	if err != nil {
-		log.Fatal("[FATAL] OpenTelemetry setup failed", err)
+		log.Println("[FATAL] OpenTelemetry setup failed", err)
+		return nil, commons.NewSetupError(err)
 	}
 	logger = *otelslog.NewLogger(name)
 	log.Println("OpenTelemetry OK!")
-	return otelShutdown
+	return otelShutdown, nil
 }
 
 func redicrectToDocs(w http.ResponseWriter, r *http.Request) {
