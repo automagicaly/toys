@@ -1,62 +1,26 @@
-package announcement
+package repos
 
 import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"time"
+
+	aux "lorde.tech/toys/agenda"
+	"lorde.tech/toys/agenda/entities"
 )
 
-type AnnouncementType uint8
-
-const (
-	Default AnnouncementType = 0
-	Report  AnnouncementType = 1 << (iota - 1)
-	Confirmation
-	TeacherNote
-	ParentNote
-	Urgent
-	Event
-	Reserved_0
-	Reserved_1
-)
-
-type VersionNumber uint8
-
-const (
-	AlfaVersion VersionNumber = iota
-)
-
-type TenantID uint64
-type UserID uint64
-type ClassID uint64
-type AnnouncementID uint64
-
-type Announcement struct {
-	ID        AnnouncementID
-	Version   VersionNumber
-	Type      AnnouncementType
-	Timestamp time.Time
-	Tenant    TenantID
-	Parent    UserID
-	Teacher   UserID
-	Class     ClassID
-	Message   string
-	Metadata  map[string]any
-}
-
-type AnnouncementRepository struct {
+type MessageRepository struct {
 	db *sql.DB
 }
 
-func NewAnnouncementRepository(db *sql.DB) *AnnouncementRepository {
-	return &AnnouncementRepository{
+func New(db *sql.DB) *MessageRepository {
+	return &MessageRepository{
 		db: db,
 	}
 }
 
-func (repo *AnnouncementRepository) Save(a *Announcement) error {
-	if a.ID != Missing {
+func (repo *MessageRepository) Save(msg *entities.Message) error {
+	if msg.ID != entities.Missing {
 		return errors.New("Announcement already marked as saved")
 	}
 
@@ -65,33 +29,33 @@ func (repo *AnnouncementRepository) Save(a *Announcement) error {
 	`
 	serializedMetadata := ""
 	var err error = nil
-	if a.Metadata != nil {
-		jsonData, err := json.Marshal(a.Metadata)
-		DieOnError(err)
+	if msg.Metadata != nil {
+		jsonData, err := json.Marshal(msg.Metadata)
+		aux.DieOnError(err)
 		serializedMetadata = string(jsonData)
 	}
 	result, err := repo.db.Exec(
 		query,
-		a.Version,
-		a.Type,
-		a.Timestamp.Unix(),
-		a.Tenant,
-		a.Parent,
-		a.Teacher,
-		a.Class,
-		a.Message,
+		msg.Version,
+		msg.Type,
+		msg.Timestamp.Unix(),
+		msg.Tenant,
+		msg.Parent,
+		msg.Teacher,
+		msg.Class,
+		msg.Content,
 		serializedMetadata,
 	)
-	DieOnError(err)
+	aux.DieOnError(err)
 
 	id, err := result.LastInsertId()
-	DieOnError(err)
-	a.ID = AnnouncementID(id)
+	aux.DieOnError(err)
+	msg.ID = entities.MessageID(id)
 
 	return err
 }
 
-func (repo *AnnouncementRepository) List(tenant TenantID, parent UserID, teacher UserID, class ClassID) (*[]Announcement, error) {
+func (repo *MessageRepository) List(tenant TenantID, parent UserID, teacher UserID, class ClassID) (*[]Message, error) {
 	query := `
 		SELECT id 
 		FROM announcements 
@@ -124,7 +88,7 @@ func (repo *AnnouncementRepository) List(tenant TenantID, parent UserID, teacher
 	defer rows.Close()
 
 	for rows.Next() {
-		var a Announcement
+		var a Message
 		rows.Scan(&a.ID)
 		println(a.ID)
 	}
@@ -132,7 +96,7 @@ func (repo *AnnouncementRepository) List(tenant TenantID, parent UserID, teacher
 	return nil, nil
 }
 
-func (repo *AnnouncementRepository) create_annoucements_table() error {
+func (repo *MessageRepository) create_annoucements_table() error {
 	_, err := repo.db.Exec(`
 		CREATE TABLE announcements (
 			id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
@@ -151,7 +115,7 @@ func (repo *AnnouncementRepository) create_annoucements_table() error {
 	return err
 }
 
-func (repo *AnnouncementRepository) Init() {
+func (repo *MessageRepository) Init() {
 	exists, err := check_if_table_exists(repo.db, "announcements")
 	DieOnError(err)
 	if !exists {

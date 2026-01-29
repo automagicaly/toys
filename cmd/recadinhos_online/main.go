@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"log"
+	"net/http"
 	"os"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -49,4 +50,16 @@ func main() {
 	a.DieOnError(err)
 	log.Printf("New ID: %d\n", recado.ID)
 	*/
+}
+
+type AnnouncementController struct {
+}
+
+type AnnouncementHandler struct {
+	controller *AnnouncementController
+}
+
+func (ac *AnnouncementHandler) upsert_announcement_handler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+	}
 }
